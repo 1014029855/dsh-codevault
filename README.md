@@ -1,5 +1,10 @@
 # dsh-codevault · 源码阅读档案
 
+<!-- 徽章区：发布后请把 <owner>/<repo> 与版本替换为真实值 -->
+[![npm version](https://img.shields.io/npm/v/dsh-codevault)](https://www.npmjs.com/package/dsh-codevault)
+[![license](https://img.shields.io/npm/l/dsh-codevault)](LICENSE)
+[![dsh plugin](https://img.shields.io/badge/dsh-plugin-%40deepseek--ai%2Fcordis-blue)](https://github.com/deepseek-ai/deepseek-harness)
+
 一个面向"认真读开源代码的人"的 DeepSeek Harness（dsh）插件：把每次"读懂代码"沉淀成
 **可回访的个人阅读档案**。档案本身是 Markdown + JSONL，可当作 Obsidian vault 打开，
 用图谱、标签、搜索回看自己读过什么。
@@ -13,6 +18,27 @@
 dsh-codevault 让你在读懂的瞬间花 10 秒记一笔（或让模型写一篇坐标式深读笔记），并自动把阅读
 按"仓库 → 文件 → 符号"组织成**对象卡片**——同一个对象（如 `plugin.ts` 的 `apply` 机制）无论
 重读多少次，都累积在同一张 Obsidian 卡上，Obsidian 里是一张会生长的活卡，而不是碎片流水账。
+
+## 快速开始（含 Obsidian 联动的最小配置）
+
+装好插件并重启后，把下面这段放进 profile 的 `cordis.patch.yml`
+（路径按你的机器改；`<DSH_HOME>` 默认 `~/.dsh`）：
+
+```yaml
+# <DSH_HOME>/profiles/web/cordis.patch.yml 或 ~/.dsh/cordis.patch.yml
+- id: dsh-codevault
+  config:
+    # 档案写入位置：默认 ~/.dsh/data/dsh-codevault；建议放进 Obsidian vault（或它的子目录）
+    dataDir: 'D:/Obsidian/源码阅读'
+    # 可选：你的 Obsidian vault 根目录 —— 开启"只读关联"：
+    # vault_search / vault_read / vault_suggest 可检索你已有的笔记，
+    # read_link 把卡片与它们 [[链接]] 起来
+    vaultDir: 'D:/Obsidian'
+```
+
+然后：`dsh plugin --profile web add dsh-codevault`（或从 dsh-market 安装）→ 重启 dsh web →
+对话里说"记一下"即可。把 `dataDir` 目录用 Obsidian "Open folder as vault" 打开，
+就能看到档案图谱。详见下方「自定义数据存放位置」与「接入 Obsidian」。
 
 ## 功能速览
 
