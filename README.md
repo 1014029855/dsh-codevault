@@ -1,9 +1,9 @@
 # dsh-codevault · 源码阅读档案
 
-<!-- 徽章区：发布后请把 <owner>/<repo> 与版本替换为真实值 -->
+<!-- 徽章区：发布后 npm 徽章会自动反映 registry 版本/许可 -->
 [![npm version](https://img.shields.io/npm/v/dsh-codevault)](https://www.npmjs.com/package/dsh-codevault)
 [![license](https://img.shields.io/npm/l/dsh-codevault)](LICENSE)
-[![dsh plugin](https://img.shields.io/badge/dsh-plugin-%40deepseek--ai%2Fcordis-blue)](https://github.com/deepseek-ai/deepseek-harness)
+[![dsh plugin](https://img.shields.io/badge/dsh_plugin-DeepSeek_Harness-blue)](https://github.com/deepseek-ai/deepseek-harness)
 
 一个面向"认真读开源代码的人"的 DeepSeek Harness（dsh）插件：把每次"读懂代码"沉淀成
 **可回访的个人阅读档案**。档案本身是 Markdown + JSONL，可当作 Obsidian vault 打开，
