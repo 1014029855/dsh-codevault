@@ -1,0 +1,74 @@
+{
+  "name": "dsh-codevault",
+  "version": "0.2.0",
+  "description": "A DeepSeek Harness (dsh) plugin for people who read open-source code seriously: quick-capture each 'I get it' moment, write coordinate-style deep-reading notes (subject coordinates -> mechanism -> takeaways -> follow-ups), keep a personal, revisitable reading archive that doubles as an Obsidian vault, and link cards to notes you already own. 中文名：源码阅读档案。",
+  "type": "module",
+  "main": "./lib/index.js",
+  "types": "./lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "src",
+    "cordis.patch.yml",
+    "DESIGN.md",
+    "README.md",
+    "DEMO-NARRATIVE.md",
+    "THIRD-PARTY.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "smoke": "node smoke.mjs",
+    "prepublishOnly": "pnpm run build && pnpm run smoke"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "cordis",
+    "code-reading",
+    "reading-archive",
+    "obsidian",
+    "knowledge-management",
+    "note-taking",
+    "source-code",
+    "第二大脑",
+    "源码阅读",
+    "阅读档案"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-commands": "^0.1.2-rc.1",
+    "@deepseek-ai/dsh-home-paths": "^0.1.2-rc.1",
+    "@deepseek-ai/dsh-skill": "^0.1.2-rc.1",
+    "@deepseek-ai/dsh-tools": "^0.1.2-rc.1",
+    "@deepseek-ai/schemastery": "^3.18.2"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.2",
+    "@deepseek-ai/dsh-commands": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-home-paths": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-skill": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-tools": "0.1.2-rc.1",
+    "@deepseek-ai/schemastery": "3.18.2",
+    "@types/node": "^22.10.0",
+    "typescript": "^5.6.3"
+  }
+}
