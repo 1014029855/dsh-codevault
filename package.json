@@ -24,6 +24,7 @@
     "LICENSE"
   ],
   "scripts": {
+    "prepare": "pnpm run build",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "smoke": "node smoke.mjs",
