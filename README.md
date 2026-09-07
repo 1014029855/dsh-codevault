@@ -8,7 +8,6 @@
 
 档案就是 Markdown + JSONL 文件，可以直接用 Obsidian 打开。同一个对象（比如 `plugin.ts` 的 `apply` 机制）读多少次都记在同一张卡上，卡片会随着你的阅读长起来，不是一条条碎片流水账。
 
-它不替你读仓库，也不给代码打分。它只负责把"你读的时候搞明白了什么"记下来，记成以后找得回来的东西。
 
 ## 安装
 
@@ -25,7 +24,6 @@ dsh plugin --profile web add dshmarket      # 第一次先装市场
 dsh plugin --profile web add dsh-codevault
 ```
 
-npm 还没发布前，也可以从源码装（见文末"开发"一节）。
 
 重启 dsh web，启动日志里出现 `[dsh-codevault] loaded` 就算装好了。
 
