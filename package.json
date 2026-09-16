@@ -1,7 +1,7 @@
 {
   "name": "dsh-codevault",
-  "version": "0.2.0",
-  "description": "A DeepSeek Harness (dsh) plugin that records what you understood while reading open-source code: quick-capture notes or full deep-reading notes, grouped into one card per repo / file / symbol, stored as Markdown + JSONL you can open in Obsidian; query past reads and link cards to notes already in your own Obsidian vault. 中文名：源码阅读档案。",
+  "version": "0.3.0",
+  "description": "A DeepSeek Harness (dsh) plugin that records what you understood while reading open-source code: quick-capture notes or full deep-reading notes, grouped into one card per repo / file / symbol, stored as Markdown + JSONL you can open in Obsidian; replay any card back to an earlier read, query past reads, and link cards to notes already in your own Obsidian vault. 中文名：源码阅读档案。",
   "type": "module",
   "main": "./lib/index.js",
   "types": "./lib/index.d.ts",
@@ -17,6 +17,7 @@
     "lib",
     "src",
     "cordis.patch.yml",
+    "CHANGELOG.md",
     "DESIGN.md",
     "README.md",
     "DEMO-NARRATIVE.md",

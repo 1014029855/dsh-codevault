@@ -43,6 +43,12 @@ export interface ReadingEntry {
   readonly bodyMarkdown?: string
   /** Self-distilled reusable points (note). */
   readonly takeaway: readonly string[]
+  /**
+   * Questions to answer the NEXT time this object is revisited — a retrieval
+   * prompt, not trivia: they should force re-deriving the mechanism. Kept on the
+   * event and merged (deduped) into the card's "回访问题" section.
+   */
+  readonly revisit: readonly string[]
   /** Free-form topic words for Obsidian tag search (NOT used for stats). */
   readonly tags: readonly string[]
   /**
@@ -65,6 +71,9 @@ export const MIN_NOTE_BODY = 200
 export const MAX_TAGS = 12
 export const MAX_REPO_LEN = 200
 export const MAX_LINKS = 20
+/** Cap on revisit questions kept per entry (2–3 is the intended shape). */
+export const MAX_REVISIT = 6
+export const MAX_REVISIT_LEN = 200
 
 /**
  * Validate & normalize external-link targets (Obsidian note names, no [[]]):
@@ -135,6 +144,67 @@ export function normalizeTags(raw: readonly unknown[] | undefined): string[] {
     }
   }
   return out
+}
+
+/**
+ * Normalize revisit questions: trim, collapse inner whitespace, dedupe, cap
+ * count/length. Empty entries are dropped (questions are optional).
+ */
+export function normalizeRevisit(raw: readonly unknown[] | undefined): string[] {
+  if (raw === undefined) return []
+  if (!Array.isArray(raw)) throw new Error('revisit 必须是字符串数组（可省略）')
+  if (raw.length > MAX_REVISIT) throw new Error(`revisit 最多 ${MAX_REVISIT} 条`)
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const item of raw) {
+    const q = String(item).trim().replace(/\s+/gu, ' ')
+    if (!q) continue
+    if ([...q].length > MAX_REVISIT_LEN) {
+      throw new Error(`revisit 单条过长（≤${MAX_REVISIT_LEN} 字符）：${clip(q, 40)}`)
+    }
+    if (!seen.has(q)) {
+      seen.add(q)
+      out.push(q)
+    }
+  }
+  return out
+}
+
+export interface TagPolicyResult {
+  /** Tags actually attached to the new event. */
+  readonly accepted: string[]
+  /** Suggested tags rejected because they are not part of the vocabulary. */
+  readonly dropped: string[]
+}
+
+/**
+ * Tag discipline (borrowed from WeKnora's auto-tagging rule): a model-suggested
+ * tag is accepted only when it ALREADY exists in the archive vocabulary or on
+ * this object, so tagging never silently explodes the vocabulary; genuinely new
+ * topic words must be declared explicitly via `newTags`. Card tags are the union
+ * over all events, so tags a human added earlier are never overwritten.
+ *
+ * `seedVocabulary` covers the one case where the rule cannot apply: an archive
+ * with no tags at all yet (the very first records) — filtering against an empty
+ * vocabulary would reject everything and no vocabulary could ever form, so those
+ * writes seed it. After that the filter is strict.
+ */
+export function applyTagPolicy(
+  suggested: readonly unknown[] | undefined,
+  newTags: readonly unknown[] | undefined,
+  vocabulary: readonly string[],
+  objectTags: readonly string[] = [],
+  seedVocabulary = false,
+): TagPolicyResult {
+  const declared = normalizeTags(newTags)
+  const known = new Set([...vocabulary, ...objectTags, ...declared].map((t) => t.toLowerCase()))
+  const accepted: string[] = []
+  const dropped: string[] = []
+  for (const tag of normalizeTags(suggested)) {
+    if (known.has(tag) || seedVocabulary) accepted.push(tag)
+    else dropped.push(tag)
+  }
+  return { accepted: [...new Set([...accepted, ...declared])], dropped }
 }
 
 /** Human-oriented title for one entry (used in card H1, hub & MOC lines). */
@@ -223,6 +293,7 @@ export function buildEntry(input: {
   note?: string
   bodyMarkdown?: string
   takeaway?: readonly string[]
+  revisit?: readonly unknown[]
   tags?: readonly unknown[]
   links?: readonly unknown[]
 }): ReadingEntry {
@@ -265,6 +336,7 @@ export function buildEntry(input: {
     ...(note ? { note } : {}),
     ...(bodyMarkdown ? { bodyMarkdown } : {}),
     takeaway,
+    revisit: normalizeRevisit(input.revisit),
     tags: normalizeTags(input.tags),
     links: normalizeLinks(input.links),
     updatedAt: now,

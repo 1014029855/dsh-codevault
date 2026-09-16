@@ -16,5 +16,7 @@ export declare const vaultSearchTool: import("@deepseek-ai/dsh-tools").ToolDefin
 export declare const vaultReadTool: import("@deepseek-ai/dsh-tools").ToolDefinition;
 export declare const vaultSuggestTool: import("@deepseek-ai/dsh-tools").ToolDefinition;
 export declare const readLinkTool: import("@deepseek-ai/dsh-tools").ToolDefinition;
+export declare const readHistoryTool: import("@deepseek-ai/dsh-tools").ToolDefinition;
+export declare const readDeleteTool: import("@deepseek-ai/dsh-tools").ToolDefinition;
 export declare const TOOLS: import("@deepseek-ai/dsh-tools").ToolDefinition[];
 //# sourceMappingURL=tools.d.ts.map

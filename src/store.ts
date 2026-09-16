@@ -37,15 +37,19 @@ import {
 import { join } from 'node:path'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import {
+  EntryKind,
   MAX_LINKS,
+  MAX_REVISIT,
   MIN_NOTE_BODY,
   ReadingEntry,
+  ReadingSubject,
   cardFileName,
   clip,
   entryKindText,
   entryObjectKey,
   entryTitle,
   normalizeLinks,
+  normalizeRevisit,
   objectKey,
   subjectLabel,
   subjectOfKey,
@@ -104,9 +108,12 @@ export function readEntries(): ReadingEntry[] {
     if (!trimmed) continue
     try {
       const parsed = JSON.parse(trimmed) as ReadingEntry
-      // Legacy rows (pre-links) get an empty links array at read time.
-      if (!Array.isArray(parsed.links)) entries.push({ ...parsed, links: [] })
-      else entries.push(parsed)
+      // Legacy rows (pre-links / pre-revisit) get empty arrays at read time.
+      entries.push({
+        ...parsed,
+        links: Array.isArray(parsed.links) ? parsed.links : [],
+        revisit: Array.isArray(parsed.revisit) ? parsed.revisit : [],
+      })
     } catch (error) {
       console.warn('[dsh-codevault] skipping unparsable library line:', String(error))
     }
@@ -190,7 +197,7 @@ export function objectFileName(events: ReadingEntry[], allRows: readonly Reading
  */
 export function expandEntry(
   id: string,
-  patch: { context?: string; bodyMarkdown: string; takeaway: readonly string[] },
+  patch: { context?: string; bodyMarkdown: string; takeaway: readonly string[]; revisit?: readonly unknown[] },
 ): ReadingEntry {
   const root = ensureStore()
   const file = libraryFile(root)
@@ -214,6 +221,7 @@ export function expandEntry(
     ...(context ? { context } : {}),
     bodyMarkdown: body,
     takeaway,
+    revisit: patch.revisit !== undefined ? normalizeRevisit(patch.revisit) : (target.revisit ?? []),
     updatedAt: new Date().toISOString(),
   }
   atomicWrite(file, rows.map((e) => (e.id === id ? updated : e)).map((e) => JSON.stringify(e)).join('\n') + '\n')
@@ -297,9 +305,30 @@ export function writeObjectCard(key: string): string {
   const root = ensureStore()
   const events = groupByObject(readEntries()).get(key)
   if (!events || events.length === 0) return join(root, 'notes', 'gone.md')
+  const noteFile = anchorOf(events).noteFile ?? objectFileName(events, readEntries())
+  const file = join(root, 'notes', `${noteFile}.md`)
+  atomicWrite(file, renderObjectCard(events, key, noteFile))
+  return file
+}
+
+/**
+ * Pure projection of an object's events into card Markdown. Split out of
+ * writeObjectCard so the SAME renderer can replay a HISTORICAL subset of events
+ * (read_history): the card as it would have looked after the Nth read is exactly
+ * this function applied to the events known at that time.
+ *
+ * Every timeline entry carries its own coordinate + record instant, so the card
+ * is a citation chain: which read, against which ref, produced which paragraph.
+ */
+export function renderObjectCard(
+  allEvents: readonly ReadingEntry[],
+  key: string,
+  noteFile: string,
+): string {
+  const events = [...allEvents]
+  if (events.length === 0) return ''
   const anchor = anchorOf(events)
   const newest = newestOf(events)
-  const noteFile = anchor.noteFile ?? objectFileName(events, readEntries())
   const subject = subjectOfKey(key)
   const tags = [...new Set(events.flatMap((e) => e.tags))]
   const timelines = [...events].sort((a, b) => b.readAt.localeCompare(a.readAt))
@@ -329,6 +358,8 @@ export function writeObjectCard(key: string): string {
   body.push('')
   for (const e of timelines) {
     body.push(`### ${e.readAt.slice(0, 10)} ${entryKindText(e.kind)} · id ${e.id}`)
+    // Provenance line: which coordinates + which ref this paragraph came from.
+    body.push(`> 出处：${subjectLabel(e.subject)}${e.subject.ref ? ` @ ${e.subject.ref}` : ''} · 记录于 ${e.readAt}`)
     if (e.context) body.push(`> **为什么读到这**：${e.context}`)
     body.push('')
     if (e.kind === 'capture') {
@@ -350,6 +381,18 @@ export function writeObjectCard(key: string): string {
     for (const t of merged) body.push(`- ${t}`)
     body.push('')
   }
+  // Revisit questions: the retrieval-practice side of the archive. Merged across
+  // events (newest first) and capped, so the card ends with something to THINK
+  // about rather than something to re-read.
+  const revisit = [
+    ...new Set([...timelines].flatMap((e) => e.revisit ?? [])),
+  ].slice(0, MAX_REVISIT)
+  if (revisit.length > 0) {
+    body.push('## 回访问题（下次重想这几条）')
+    body.push('')
+    for (const q of revisit) body.push(`- ${q}`)
+    body.push('')
+  }
   // "关联 vault 笔记" section: structured links + external wikilinks the model
   // wrote in bodies. Archive-internal refs use notes/ or hub/ prefixes.
   const externalLinks = collectExternalLinks(events)
@@ -368,11 +411,9 @@ export function writeObjectCard(key: string): string {
     body.push('')
   }
 
-  const file = join(root, 'notes', `${noteFile}.md`)
-  atomicWrite(file, `${fm}\n\n${body.join('\n').replace(/\n{3,}/g, '\n\n').trim()}\n`)
-  return file
+  // Callers (writeObjectCard / read_history) decide where this text goes.
+  return `${fm}\n\n${body.join('\n').replace(/\n{3,}/g, '\n\n').trim()}\n`
 }
-
 /** Links to OTHER object cards in the same repo (not self). */
 function relatedObjectsSection(selfKey: string): string {
   const rows = readEntries()
@@ -726,5 +767,155 @@ export function archiveStats(): ArchiveStats {
     repos: aggregateRepos().length,
     captures: rows.filter((e) => e.kind === 'capture').length,
     notes: rows.filter((e) => e.kind === 'note').length,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Tag vocabulary (tag discipline: suggest only what already exists)
+// ---------------------------------------------------------------------------
+
+/** Every tag currently used anywhere in the archive, sorted — the vocabulary. */
+export function vocabularyTags(): string[] {
+  return [...new Set(readEntries().flatMap((e) => e.tags ?? []))].sort()
+}
+
+/** Tags already attached to one object (so re-tagging never drops them). */
+export function tagsOfObjectKey(key: string): string[] {
+  const events = groupByObject(readEntries()).get(key) ?? []
+  return [...new Set(events.flatMap((e) => e.tags ?? []))]
+}
+
+// ---------------------------------------------------------------------------
+// History replay (read_history): the card AS IT WAS after the Nth read
+// ---------------------------------------------------------------------------
+
+export interface HistoryLocator {
+  /** Event id of any event belonging to the object. */
+  readonly id?: string
+  /** Card file name (no `.md`) of the object. */
+  readonly noteFile?: string
+  /** Coordinate locator (repo required; path/symbol narrow it). */
+  readonly repo?: string
+  readonly path?: string
+  readonly symbol?: string
+}
+
+export interface HistoryBoundary {
+  /** Replay only events recorded at/before this instant (YYYY-MM-DD or ISO). */
+  readonly at?: string
+  /** Replay only the first N reads (1-based). */
+  readonly index?: number
+}
+
+export interface HistoryEventRef {
+  readonly id: string
+  readonly kind: EntryKind
+  readonly readAt: string
+  readonly title: string
+  readonly ref?: string
+}
+
+export interface HistoryResult {
+  readonly found: boolean
+  readonly noteFile: string
+  readonly title: string
+  readonly subject: ReadingSubject | undefined
+  readonly totalEvents: number
+  readonly shownEvents: number
+  /** ISO instant of the last replayed event ('' when nothing was replayed). */
+  readonly asOf: string
+  readonly events: readonly HistoryEventRef[]
+  /** The card projection of the replayed subset ('' when not found/empty). */
+  readonly markdown: string
+}
+
+function emptyHistory(): HistoryResult {
+  return {
+    found: false,
+    noteFile: '',
+    title: '',
+    subject: undefined,
+    totalEvents: 0,
+    shownEvents: 0,
+    asOf: '',
+    events: [],
+    markdown: '',
+  }
+}
+
+/** Resolve the object a locator points at (id > noteFile > coordinate). */
+function resolveObject(locator: HistoryLocator): { key: string; events: ReadingEntry[] } | undefined {
+  const rows = readEntries()
+  const byObj = groupByObject(rows)
+  if (locator.id) {
+    const hit = rows.find((e) => e.id === locator.id)
+    if (!hit) return undefined
+    const key = entryObjectKey(hit)
+    return { key, events: byObj.get(key) ?? [hit] }
+  }
+  if (locator.noteFile) {
+    const want = locator.noteFile.trim()
+    const hit = rows.find((e) => (e.noteFile ?? e.id) === want)
+    if (!hit) return undefined
+    const key = entryObjectKey(hit)
+    return { key, events: byObj.get(key) ?? [hit] }
+  }
+  if (locator.repo?.trim()) {
+    const want = locator.repo.trim().toLowerCase()
+    const path = locator.path?.trim().toLowerCase()
+    const symbol = locator.symbol?.trim().toLowerCase()
+    for (const [key, events] of byObj) {
+      const subject = subjectOfKey(key)
+      if (subject.repo.toLowerCase() !== want) continue
+      if (path && !(subject.path ?? '').toLowerCase().includes(path)) continue
+      if (symbol && !(subject.symbol ?? '').toLowerCase().includes(symbol)) continue
+      return { key, events }
+    }
+  }
+  return undefined
+}
+
+/**
+ * Replay an object card to a past point: the events known up to `at` / after the
+ * first `index` reads, rendered through the SAME projection the live card uses.
+ * This is what makes "how did I understand this last time?" answerable — the
+ * append-only log IS the version history, this only exposes it.
+ */
+export function objectHistory(locator: HistoryLocator, boundary: HistoryBoundary = {}): HistoryResult {
+  const resolved = resolveObject(locator)
+  if (!resolved) return emptyHistory()
+  const ordered = [...resolved.events].sort((a, b) => a.readAt.localeCompare(b.readAt))
+  let cut = ordered
+  if (boundary.at?.trim()) {
+    const raw = boundary.at.trim()
+    const iso = /^\d{4}-\d{2}-\d{2}$/u.test(raw) ? `${raw}T23:59:59.999Z` : raw
+    const limit = Date.parse(iso)
+    if (Number.isNaN(limit)) throw new Error('at 需为 YYYY-MM-DD 或 ISO 时间字符串')
+    cut = cut.filter((e) => Date.parse(e.readAt) <= limit)
+  }
+  if (boundary.index !== undefined) {
+    const n = Math.floor(boundary.index)
+    if (!Number.isFinite(n) || n < 1) throw new Error('index 需为 ≥1 的整数（第几次阅读之后）')
+    cut = cut.slice(0, n)
+  }
+  const noteFile = anchorOf(resolved.events).noteFile ?? objectFileName(resolved.events, readEntries())
+  const events: HistoryEventRef[] = cut.map((e) => ({
+    id: e.id,
+    kind: e.kind,
+    readAt: e.readAt,
+    title: entryTitle(e),
+    ...(e.subject.ref ? { ref: e.subject.ref } : {}),
+  }))
+  const last = cut[cut.length - 1]
+  return {
+    found: true,
+    noteFile,
+    title: objectTitle(resolved.events),
+    subject: subjectOfKey(resolved.key),
+    totalEvents: ordered.length,
+    shownEvents: cut.length,
+    asOf: last ? last.readAt : '',
+    events,
+    markdown: cut.length > 0 ? renderObjectCard(cut, resolved.key, noteFile) : '',
   }
 }

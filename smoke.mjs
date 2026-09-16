@@ -19,6 +19,11 @@ const [{ TOOLS }, store, vault, { codevaultCommandHandler }] =
 const { readEntries, queryEntries, recentEntries, archiveStats, hubSlug, hubPath, deleteEntry, configureDataRoot, dataRoot, noteFilePath, migrateLegacyNoteFiles } = store
 const { configureVaultRoot, vaultRoot } = vault
 const [capture, note, expand, query, recent, vaultSearch, vaultRead, vaultSuggest, readLink] = TOOLS
+const readHistory = TOOLS.find((t) => t.name === 'read_history')
+const readDelete = TOOLS.find((t) => t.name === 'read_delete')
+check('11 tools registered', TOOLS.length, 11)
+truthy('read_history registered', Boolean(readHistory))
+truthy('read_delete registered', Boolean(readDelete))
 const exec = { signal: new AbortController().signal }
 
 let failures = 0
@@ -55,6 +60,8 @@ const c1 = await capture.execute({
 check('capture1 kind', c1.kind, 'capture')
 check('capture1 count', c1.libraryCount, 1)
 check('capture1 file title-based', basename(c1.notePath).replace(/\.md$/, ''), 'apply-插件入口的声明式依赖注入')
+check('first write seeds the tag vocabulary', rowOf(c1.id).tags, ['cordis', '插件机制'])
+check('first write drops nothing', c1.droppedTags, [])
 
 // --- capture B (different object: tools.ts) ---
 const c2 = await capture.execute({
@@ -304,6 +311,79 @@ try {
 } finally {
   rmSync(vaultDirTmp, { recursive: true, force: true })
 }
+
+// --- tag discipline: tags must already exist; newTags is the explicit door ---
+truthy('vocabulary seeded with cordis', store.vocabularyTags().includes('cordis'))
+const td = await capture.execute({
+  subject: { repo: 'tag/r', path: 'x.ts' },
+  title: '标签纪律测试',
+  note: '测试标签纪律：词表外的新词会被拒，已有词保留。',
+  tags: ['cordis', 'brand-new-topic'],
+}, exec)
+lossless('tag policy output lossless', td)
+check('dropped unknown tag', td.droppedTags, ['brand-new-topic'])
+check('kept known tag', rowOf(td.id).tags, ['cordis'])
+const td2 = await capture.execute({
+  subject: { repo: 'tag/r', path: 'y.ts' },
+  note: '显式新标签：走 newTags 才进词表。',
+  tags: ['cordis'],
+  newTags: ['fresh-topic'],
+}, exec)
+check('newTags accepted into vocabulary', rowOf(td2.id).tags.includes('fresh-topic'), true)
+truthy('vocabulary grew by newTags', store.vocabularyTags().includes('fresh-topic'))
+
+// --- revisit questions: stored per event, merged into the card ---
+const rv1 = await capture.execute({
+  subject: { repo: 'rev/r', path: 'a.ts', symbol: 'f' },
+  title: '回访问题测试',
+  note: '第一遍：写上回访问题。',
+  revisit: ['这个符号在哪一步被调用？', '换成另一种写法会怎样？'],
+  tags: ['cordis'],
+}, exec)
+truthy('card has revisit section', readFileSync(rv1.notePath, 'utf8').includes('回访问题（下次重想这几条）'))
+truthy('card lists first question', readFileSync(rv1.notePath, 'utf8').includes('这个符号在哪一步被调用？'))
+truthy('timeline entry carries provenance', readFileSync(rv1.notePath, 'utf8').includes('> 出处：'))
+const rv2 = await capture.execute({
+  subject: { repo: 'rev/r', path: 'a.ts', symbol: 'f' },
+  note: '第二遍：重复问题应去重，新问题应出现。',
+  revisit: ['这个符号在哪一步被调用？', '还有第三个问题吗？'],
+}, exec)
+const rvCard = readFileSync(rv1.notePath, 'utf8')
+check('revisit dedupes across events', (rvCard.match(/这个符号在哪一步被调用？/gu) ?? []).length, 1)
+truthy('card contains newly added question', rvCard.includes('还有第三个问题吗？'))
+await throws('revisit item too long', () =>
+  capture.execute({ subject: { repo: 'rev/r', path: 'b.ts' }, note: 'x', revisit: ['q'.repeat(220)] }, exec))
+await throws('too many revisit items', () =>
+  capture.execute({ subject: { repo: 'rev/r', path: 'c.ts' }, note: 'x', revisit: Array.from({ length: 7 }, (_, i) => `q${i}`) }, exec))
+
+// --- read_history: replay the object card to an earlier state ---
+const histAll = await readHistory.execute({ noteFile: rowOf(rv1.id).noteFile }, exec)
+lossless('history output lossless', histAll)
+check('history found', histAll.found, true)
+check('history total events', histAll.totalEvents, 2)
+check('history replays all by default', histAll.shownEvents, 2)
+const histFirst = await readHistory.execute({ noteFile: rowOf(rv1.id).noteFile, index: 1 }, exec)
+check('history index=1 replays first read only', histFirst.shownEvents, 1)
+truthy('replay keeps first read text', histFirst.markdown.includes('第一遍：写上回访问题。'))
+truthy('replay drops later read text', !histFirst.markdown.includes('第二遍：重复问题应去重'))
+const histPast = await readHistory.execute({ repo: 'rev/r', path: 'a.ts', at: '2000-01-01' }, exec)
+check('history before any read is empty', histPast.shownEvents, 0)
+const histBySymbol = await readHistory.execute({ repo: 'rev/r', symbol: 'f' }, exec)
+check('history locates by coordinate', histBySymbol.found, true)
+check('history unknown locator', (await readHistory.execute({ noteFile: 'no-such-card' }, exec)).found, false)
+await throws('history without locator', () => readHistory.execute({}, exec))
+await throws('history bad at', () => readHistory.execute({ noteFile: rowOf(rv1.id).noteFile, at: 'not-a-date' }, exec))
+
+// --- read_delete: confirm guard, card rebuild, last-event removal ---
+await throws('delete without confirm', () => readDelete.execute({ id: rv2.id }, exec))
+const del = await readDelete.execute({ id: rv2.id, confirm: true }, exec)
+lossless('delete output lossless', del)
+check('delete removed the event', readEntries().some((e) => e.id === rv2.id), false)
+check('delete keeps object alive', del.remainingEvents, 1)
+check('delete keeps the card', del.cardRemoved, false)
+truthy('card rebuilt without deleted read', !readFileSync(del.notePath, 'utf8').includes('第二遍：重复问题应去重'))
+const delLast = await readDelete.execute({ id: rv1.id, confirm: true }, exec)
+check('deleting last event removes the card', delLast.cardRemoved, true)
 
 rmSync(dir, { recursive: true, force: true })
 console.log(failures === 0 ? '\nALL SMOKE TESTS PASSED' : `\n${failures} FAILURES`)

@@ -38,6 +38,12 @@ export interface ReadingEntry {
     readonly bodyMarkdown?: string;
     /** Self-distilled reusable points (note). */
     readonly takeaway: readonly string[];
+    /**
+     * Questions to answer the NEXT time this object is revisited — a retrieval
+     * prompt, not trivia: they should force re-deriving the mechanism. Kept on the
+     * event and merged (deduped) into the card's "回访问题" section.
+     */
+    readonly revisit: readonly string[];
     /** Free-form topic words for Obsidian tag search (NOT used for stats). */
     readonly tags: readonly string[];
     /**
@@ -59,6 +65,9 @@ export declare const MIN_NOTE_BODY = 200;
 export declare const MAX_TAGS = 12;
 export declare const MAX_REPO_LEN = 200;
 export declare const MAX_LINKS = 20;
+/** Cap on revisit questions kept per entry (2–3 is the intended shape). */
+export declare const MAX_REVISIT = 6;
+export declare const MAX_REVISIT_LEN = 200;
 /**
  * Validate & normalize external-link targets (Obsidian note names, no [[]]):
  * trim, drop accidental brackets, cap count/length, dedupe keeping order.
@@ -74,6 +83,30 @@ export declare function normalizeSubject(raw: ReadingSubject): ReadingSubject;
  * vocabulary and NOT used for statistics, so the check is deliberately loose.
  */
 export declare function normalizeTags(raw: readonly unknown[] | undefined): string[];
+/**
+ * Normalize revisit questions: trim, collapse inner whitespace, dedupe, cap
+ * count/length. Empty entries are dropped (questions are optional).
+ */
+export declare function normalizeRevisit(raw: readonly unknown[] | undefined): string[];
+export interface TagPolicyResult {
+    /** Tags actually attached to the new event. */
+    readonly accepted: string[];
+    /** Suggested tags rejected because they are not part of the vocabulary. */
+    readonly dropped: string[];
+}
+/**
+ * Tag discipline (borrowed from WeKnora's auto-tagging rule): a model-suggested
+ * tag is accepted only when it ALREADY exists in the archive vocabulary or on
+ * this object, so tagging never silently explodes the vocabulary; genuinely new
+ * topic words must be declared explicitly via `newTags`. Card tags are the union
+ * over all events, so tags a human added earlier are never overwritten.
+ *
+ * `seedVocabulary` covers the one case where the rule cannot apply: an archive
+ * with no tags at all yet (the very first records) — filtering against an empty
+ * vocabulary would reject everything and no vocabulary could ever form, so those
+ * writes seed it. After that the filter is strict.
+ */
+export declare function applyTagPolicy(suggested: readonly unknown[] | undefined, newTags: readonly unknown[] | undefined, vocabulary: readonly string[], objectTags?: readonly string[], seedVocabulary?: boolean): TagPolicyResult;
 /** Human-oriented title for one entry (used in card H1, hub & MOC lines). */
 export declare function subjectTitle(s: ReadingSubject): string;
 /**
@@ -112,6 +145,7 @@ export declare function buildEntry(input: {
     note?: string;
     bodyMarkdown?: string;
     takeaway?: readonly string[];
+    revisit?: readonly unknown[];
     tags?: readonly unknown[];
     links?: readonly unknown[];
 }): ReadingEntry;

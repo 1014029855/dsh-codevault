@@ -24,7 +24,7 @@
  * Concurrency (V1 note still holds): all I/O synchronous, atomic tmp+rename;
  * cross-process writers: last writer wins (documented, accepted).
  */
-import { ReadingEntry } from './domain.js';
+import { EntryKind, ReadingEntry, ReadingSubject } from './domain.js';
 export declare const DATA_DIR_ENV = "DSCODEVAULT_DATA_DIR";
 /** Apply the plugin Config's dataDir (empty/whitespace falls back to env/default). */
 export declare function configureDataRoot(dataDir: string | undefined): void;
@@ -58,6 +58,7 @@ export declare function expandEntry(id: string, patch: {
     context?: string;
     bodyMarkdown: string;
     takeaway: readonly string[];
+    revisit?: readonly unknown[];
 }): ReadingEntry;
 /**
  * Add structured external vault links to ONE event (dedupe, cap MAX_LINKS),
@@ -73,6 +74,16 @@ export declare function objectCardPath(key: string): string;
 export declare function noteFilePath(e: ReadingEntry): string;
 /** Rebuild the card of one object from its events (atomic). */
 export declare function writeObjectCard(key: string): string;
+/**
+ * Pure projection of an object's events into card Markdown. Split out of
+ * writeObjectCard so the SAME renderer can replay a HISTORICAL subset of events
+ * (read_history): the card as it would have looked after the Nth read is exactly
+ * this function applied to the events known at that time.
+ *
+ * Every timeline entry carries its own coordinate + record instant, so the card
+ * is a citation chain: which read, against which ref, produced which paragraph.
+ */
+export declare function renderObjectCard(allEvents: readonly ReadingEntry[], key: string, noteFile: string): string;
 /** File-system & wikilink-safe slug of a repo identifier (keeps [a-z0-9._-]). */
 export declare function hubSlug(repo: string): string;
 export declare function hubPath(repo: string): string;
@@ -136,4 +147,51 @@ export interface ArchiveStats {
     readonly notes: number;
 }
 export declare function archiveStats(): ArchiveStats;
+/** Every tag currently used anywhere in the archive, sorted — the vocabulary. */
+export declare function vocabularyTags(): string[];
+/** Tags already attached to one object (so re-tagging never drops them). */
+export declare function tagsOfObjectKey(key: string): string[];
+export interface HistoryLocator {
+    /** Event id of any event belonging to the object. */
+    readonly id?: string;
+    /** Card file name (no `.md`) of the object. */
+    readonly noteFile?: string;
+    /** Coordinate locator (repo required; path/symbol narrow it). */
+    readonly repo?: string;
+    readonly path?: string;
+    readonly symbol?: string;
+}
+export interface HistoryBoundary {
+    /** Replay only events recorded at/before this instant (YYYY-MM-DD or ISO). */
+    readonly at?: string;
+    /** Replay only the first N reads (1-based). */
+    readonly index?: number;
+}
+export interface HistoryEventRef {
+    readonly id: string;
+    readonly kind: EntryKind;
+    readonly readAt: string;
+    readonly title: string;
+    readonly ref?: string;
+}
+export interface HistoryResult {
+    readonly found: boolean;
+    readonly noteFile: string;
+    readonly title: string;
+    readonly subject: ReadingSubject | undefined;
+    readonly totalEvents: number;
+    readonly shownEvents: number;
+    /** ISO instant of the last replayed event ('' when nothing was replayed). */
+    readonly asOf: string;
+    readonly events: readonly HistoryEventRef[];
+    /** The card projection of the replayed subset ('' when not found/empty). */
+    readonly markdown: string;
+}
+/**
+ * Replay an object card to a past point: the events known up to `at` / after the
+ * first `index` reads, rendered through the SAME projection the live card uses.
+ * This is what makes "how did I understand this last time?" answerable — the
+ * append-only log IS the version history, this only exposes it.
+ */
+export declare function objectHistory(locator: HistoryLocator, boundary?: HistoryBoundary): HistoryResult;
 //# sourceMappingURL=store.d.ts.map

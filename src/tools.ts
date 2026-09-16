@@ -9,9 +9,97 @@
  */
 
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { MIN_NOTE_BODY, buildEntry, entryKindText, subjectLabel } from './domain.js'
-import { addLinks, commitEntry, expandEntry, noteFilePath, queryEntries, readEntries, recentEntries } from './store.js'
+import {
+  EntryKind,
+  MIN_NOTE_BODY,
+  ReadingSubject,
+  applyTagPolicy,
+  buildEntry,
+  entryKindText,
+  entryObjectKey,
+  entryTitle,
+  objectKey,
+  subjectLabel,
+} from './domain.js'
+import {
+  addLinks,
+  commitEntry,
+  deleteEntry,
+  expandEntry,
+  groupByObject,
+  noteFilePath,
+  objectHistory,
+  queryEntries,
+  readEntries,
+  recentEntries,
+  tagsOfObjectKey,
+  vocabularyTags,
+} from './store.js'
 import { readVaultNote, searchVault, suggestVault, vaultRoot } from './vault.js'
+
+/**
+ * Post-write PROPOSALS (never auto-applied): what the archive thinks might be
+ * worth doing next, offered to the user for confirmation —
+ *  - suggestUpgrade: an object read several times that still only has captures;
+ *  - relatedNotes: earlier vault notes that look related (vaultDir configured).
+ * The tool layer never links or expands on its own; the user (or the user's
+ * explicit instruction) decides.
+ */
+interface Proposal {
+  readonly readCount: number
+  readonly suggestUpgrade: boolean
+  readonly relatedNotes: readonly { readonly basename: string; readonly path: string }[]
+}
+
+function buildProposal(subject: ReadingSubject, tags: readonly string[], kind: EntryKind): Proposal {
+  const key = objectKey(subject)
+  const events = groupByObject(readEntries()).get(key) ?? []
+  const readCount = events.length
+  const hasNote = events.some((e) => e.kind === 'note')
+  const suggestUpgrade = kind === 'capture' && !hasNote && readCount >= 2
+  const relatedNotes: { basename: string; path: string }[] = []
+  if (vaultRoot() && tags.length > 0) {
+    try {
+      for (const s of suggestVault({ words: [...tags], limit: 3 }).suggestions) {
+        relatedNotes.push({ basename: s.basename, path: s.path })
+      }
+    } catch {
+      // Related-note discovery is optional context; never block a write.
+    }
+  }
+  return { readCount, suggestUpgrade, relatedNotes }
+}
+
+/** Render at most `max` characters of card Markdown for a tool result. */
+function clipMarkdown(markdown: string, max = 8000): { text: string; truncated: boolean } {
+  if ([...markdown].length <= max) return { text: markdown, truncated: false }
+  return { text: `${[...markdown].slice(0, max).join('')}\n\n…（卡片较长，已截断）`, truncated: true }
+}
+
+/** Shared param: revisit questions (retrieval prompts stored with the event). */
+const REVISIT_PARAM = {
+  type: 'array',
+  items: { type: 'string' },
+  description:
+    '可选 2–3 条"回访问题"：下次回看这张卡时用来逼自己重想机制（如"这个注入在生命周期哪一步触发？"），' +
+    '不要写能直接搜到答案的琐碎问题。会合并进卡片的"回访问题"小节。',
+} as const
+
+/** Shared param: NEW tag words (bypasses the existing-vocabulary filter). */
+const NEW_TAGS_PARAM = {
+  type: 'array',
+  items: { type: 'string' },
+  description:
+    '可选：确实要新增的主题词（不在已有标签表里时才用）。tags 只接受档案里已存在的标签，避免标签爆炸。',
+} as const
+
+const TAGS_PARAM = {
+  type: 'array',
+  items: { type: 'string' },
+  description:
+    '可选主题词（2–40 字符，自动小写），供 Obsidian 标签检索、不做统计。' +
+    '只接受档案里已有的标签（或本对象已有的）；档案还没有任何标签时，第一批记录写入的标签会作为词表起点。全新主题词请放 newTags。',
+} as const
 
 /** Shared nested subject descriptor used by every tool. */
 const SUBJECT_PARAM = {
@@ -65,11 +153,9 @@ export const readCaptureTool = defineTool({
       type: 'string',
       description: '可选：为什么读到这 / 当时在解决什么问题。',
     },
-    tags: {
-      type: 'array',
-      items: { type: 'string' },
-      description: '可选自由主题词（2–40 字符，自动小写），供 Obsidian 标签检索，不做统计。',
-    },
+    revisit: REVISIT_PARAM,
+    tags: TAGS_PARAM,
+    newTags: NEW_TAGS_PARAM,
   },
 
   output: {
@@ -82,30 +168,78 @@ export const readCaptureTool = defineTool({
         repo: { type: 'string', required: true },
         notePath: { type: 'string', required: true, description: '已落盘的 Markdown 卡片绝对路径。' },
         libraryCount: { type: 'integer', required: true, description: '档案总条数。' },
+        readCount: { type: 'integer', required: true, description: '该阅读对象累计阅读次数（含本次）。' },
+        droppedTags: { type: 'array', required: true, items: { type: 'string' }, description: '被拒的标签（不在既有词表里）；需要时改用 newTags。' },
+        suggestUpgrade: { type: 'boolean', required: true, description: '是否建议把该对象升级为深读笔记（建议，未执行）。' },
+        relatedNotes: {
+          type: 'array',
+          required: true,
+          description: '可能相关的 vault 旧笔记候选（只读建议，未写入链接）。',
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              basename: { type: 'string', required: true },
+              path: { type: 'string', required: true },
+            },
+          },
+        },
       },
     },
-    render: (args, value) => [
-      {
-        type: 'text',
-        text:
-          `已快记入源码阅读档案：${subjectLabel(args.subject)} · ${value.id}` +
-          (value.libraryCount > 1 ? `（档案共 ${value.libraryCount} 条）` : '（档案第一条！）') +
-          `\n卡片：${value.notePath}`,
-      },
-    ],
+    render: (args, value) => {
+      const lines = [
+        `已快记入源码阅读档案：${subjectLabel(args.subject)} · ${value.id}` +
+          (value.libraryCount > 1 ? `（档案共 ${value.libraryCount} 条）` : '（档案第一条！）'),
+        `卡片：${value.notePath}`,
+      ]
+      if (value.droppedTags.length > 0) {
+        lines.push(`（忽略了不在既有标签表里的：${value.droppedTags.join(', ')}——确实要新增请用 newTags）`)
+      }
+      if (value.suggestUpgrade) {
+        lines.push(
+          `这个对象已经读过 ${value.readCount} 次、还只有快记。要不要我用 read_expand 把它升级成一篇深读笔记？你确认我再动。`,
+        )
+      }
+      if (value.relatedNotes.length > 0) {
+        lines.push(
+          `可能相关的旧笔记：${value.relatedNotes.map((n) => `[[${n.basename}]]`).join('、')}（你确认哪几篇，我用 read_link 挂上）`,
+        )
+      }
+      return [{ type: 'text', text: lines.join('\n') }]
+    },
   },
 
   async execute(args) {
+    const vocabulary = vocabularyTags()
+    const policy = applyTagPolicy(
+      args.tags,
+      args.newTags,
+      vocabulary,
+      tagsOfObjectKey(objectKey(args.subject)),
+      vocabulary.length === 0,
+    )
     const entry = buildEntry({
       kind: 'capture',
       subject: args.subject,
       title: args.title,
       context: args.context,
       note: args.note,
-      tags: args.tags,
+      revisit: args.revisit,
+      tags: policy.accepted,
     })
     const { notePath } = commitEntry(entry)
-    return { id: entry.id, kind: 'capture' as const, repo: entry.subject.repo, notePath, libraryCount: readEntries().length }
+    const proposal = buildProposal(entry.subject, entry.tags, 'capture')
+    return {
+      id: entry.id,
+      kind: 'capture' as const,
+      repo: entry.subject.repo,
+      notePath,
+      libraryCount: readEntries().length,
+      readCount: proposal.readCount,
+      droppedTags: [...policy.dropped],
+      suggestUpgrade: proposal.suggestUpgrade,
+      relatedNotes: proposal.relatedNotes.map((n) => ({ basename: n.basename, path: n.path })),
+    }
   },
 })
 
@@ -139,11 +273,9 @@ export const readNoteTool = defineTool({
       items: { type: 'string' },
       description: '至少 1 条：自己提炼的可复用要点。',
     },
-    tags: {
-      type: 'array',
-      items: { type: 'string' },
-      description: '可选自由主题词（2–40 字符，自动小写），供 Obsidian 标签检索。',
-    },
+    revisit: REVISIT_PARAM,
+    tags: TAGS_PARAM,
+    newTags: NEW_TAGS_PARAM,
   },
 
   output: {
@@ -156,19 +288,49 @@ export const readNoteTool = defineTool({
         repo: { type: 'string', required: true },
         notePath: { type: 'string', required: true, description: '已落盘的 Markdown 卡片绝对路径。' },
         libraryCount: { type: 'integer', required: true },
+        readCount: { type: 'integer', required: true, description: '该阅读对象累计阅读次数（含本次）。' },
+        droppedTags: { type: 'array', required: true, items: { type: 'string' }, description: '被拒的标签（不在既有词表里）。' },
+        relatedNotes: {
+          type: 'array',
+          required: true,
+          description: '可能相关的 vault 旧笔记候选（只读建议，未写入链接）。',
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              basename: { type: 'string', required: true },
+              path: { type: 'string', required: true },
+            },
+          },
+        },
       },
     },
-    render: (args, value) => [
-      {
-        type: 'text',
-        text:
-          `深读笔记已存档：${subjectLabel(args.subject)} · ${value.id}` +
-          `\n笔记：${value.notePath}（档案共 ${value.libraryCount} 条）`,
-      },
-    ],
+    render: (args, value) => {
+      const lines = [
+        `深读笔记已存档：${subjectLabel(args.subject)} · ${value.id}`,
+        `笔记：${value.notePath}（档案共 ${value.libraryCount} 条）`,
+      ]
+      if (value.droppedTags.length > 0) {
+        lines.push(`（忽略了不在既有标签表里的：${value.droppedTags.join(', ')}——确实要新增请用 newTags）`)
+      }
+      if (value.relatedNotes.length > 0) {
+        lines.push(
+          `可能相关的旧笔记：${value.relatedNotes.map((n) => `[[${n.basename}]]`).join('、')}（你确认哪几篇，我用 read_link 挂上）`,
+        )
+      }
+      return [{ type: 'text', text: lines.join('\n') }]
+    },
   },
 
   async execute(args) {
+    const vocabulary = vocabularyTags()
+    const policy = applyTagPolicy(
+      args.tags,
+      args.newTags,
+      vocabulary,
+      tagsOfObjectKey(objectKey(args.subject)),
+      vocabulary.length === 0,
+    )
     const entry = buildEntry({
       kind: 'note',
       subject: args.subject,
@@ -176,10 +338,21 @@ export const readNoteTool = defineTool({
       context: args.context,
       bodyMarkdown: args.bodyMarkdown,
       takeaway: args.takeaway,
-      tags: args.tags,
+      revisit: args.revisit,
+      tags: policy.accepted,
     })
     const { notePath } = commitEntry(entry)
-    return { id: entry.id, kind: 'note' as const, repo: entry.subject.repo, notePath, libraryCount: readEntries().length }
+    const proposal = buildProposal(entry.subject, entry.tags, 'note')
+    return {
+      id: entry.id,
+      kind: 'note' as const,
+      repo: entry.subject.repo,
+      notePath,
+      libraryCount: readEntries().length,
+      readCount: proposal.readCount,
+      droppedTags: [...policy.dropped],
+      relatedNotes: proposal.relatedNotes.map((n) => ({ basename: n.basename, path: n.path })),
+    }
   },
 })
 
@@ -212,6 +385,7 @@ export const readExpandTool = defineTool({
       items: { type: 'string' },
       description: '至少 1 条：自己提炼的可复用要点。',
     },
+    revisit: REVISIT_PARAM,
   },
 
   output: {
@@ -241,6 +415,7 @@ export const readExpandTool = defineTool({
       context: args.context,
       bodyMarkdown: args.bodyMarkdown,
       takeaway: args.takeaway ?? [],
+      revisit: args.revisit,
     })
     return {
       id: updated.id,
@@ -755,6 +930,203 @@ export const readLinkTool = defineTool({
   },
 })
 
+// ---------------------------------------------------------------------------
+// Version history over the append-only log: replay + undo
+// ---------------------------------------------------------------------------
+
+export const readHistoryTool = defineTool({
+  name: 'read_history',
+  description:
+    '回放某个阅读对象的历史：把它那张对象卡"倒回"到指定时点（前 N 次阅读 / 某个日期之前），返回当时的卡片内容——用来回答"上次我理解成什么样"。' +
+    '档案是追加式事件流 + 可重建视图，所以任意时点的卡片都能精确重放，不需要另存版本。' +
+    '定位方式三选一：noteFile（卡片名）、id（该对象任一事件 id）、repo(+path/symbol) 坐标。',
+  parameters: {
+    noteFile: {
+      type: 'string',
+      description: '对象卡文件名（不含 .md），即 read_query / read_recent 返回的 objects[].noteFile。',
+    },
+    id: {
+      type: 'string',
+      description: '该对象任一事件的 id（read_query 可查）。',
+    },
+    repo: {
+      type: 'string',
+      description: '仓库标识；与 path/symbol 一起定位对象（repo 精确匹配，path/symbol 子串匹配）。',
+    },
+    path: { type: 'string', description: '可选：文件路径子串。' },
+    symbol: { type: 'string', description: '可选：符号名子串。' },
+    at: {
+      type: 'string',
+      description: '可选：只重放到该时点（YYYY-MM-DD 或 ISO 时间）；该时点之后的阅读不显示。',
+    },
+    index: {
+      type: 'integer',
+      description: '可选：只重放前 N 次阅读（1 起）。与 at 同时给时两个边界都生效。',
+    },
+  },
+  output: {
+    schema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        found: { type: 'boolean', required: true, description: '是否定位到该对象。' },
+        noteFile: { type: 'string', required: true },
+        title: { type: 'string', required: true },
+        repo: { type: 'string' },
+        path: { type: 'string' },
+        symbol: { type: 'string' },
+        totalEvents: { type: 'integer', required: true, description: '该对象当前的阅读总次数。' },
+        shownEvents: { type: 'integer', required: true, description: '本次重放的阅读次数。' },
+        asOf: { type: 'string', required: true, description: '重放到的时点（最后一次重放事件的 ISO 时间；未重放则为空串）。' },
+        truncated: { type: 'boolean', required: true, description: 'markdown 是否因过长被截断。' },
+        events: {
+          type: 'array',
+          required: true,
+          description: '重放到的事件（旧→新），每条带自己的 id/类型/时间/title/ref。',
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              id: { type: 'string', required: true },
+              kind: { type: 'string', enum: ['capture', 'note'], required: true },
+              readAt: { type: 'string', required: true },
+              title: { type: 'string', required: true },
+              ref: { type: 'string' },
+            },
+          },
+        },
+        markdown: { type: 'string', required: true, description: '当时的卡片 Markdown（可能截断）。' },
+      },
+    },
+    render: (_args, value) => [
+      {
+        type: 'text',
+        text: !value.found
+          ? '没找到这个阅读对象：请给 noteFile（卡片名）、id（事件 id）或 repo(+path/symbol) 坐标之一。'
+          : value.shownEvents === 0
+            ? `${value.title}（${value.noteFile}）在给定时点还没有任何阅读记录。`
+            : [
+                `${value.title} · ${value.noteFile} —— 回放到第 ${value.shownEvents}/${value.totalEvents} 次阅读（${value.asOf.slice(0, 10)}）${value.truncated ? ' · 内容已截断' : ''}`,
+                '',
+                value.markdown,
+              ].join('\n'),
+      },
+    ],
+  },
+
+  async execute(args) {
+    if (!args.noteFile?.trim() && !args.id?.trim() && !args.repo?.trim()) {
+      throw new Error('请给 noteFile、id 或 repo(+path/symbol) 之一来定位对象')
+    }
+    if (args.index !== undefined && (!Number.isInteger(args.index) || args.index < 1)) {
+      throw new Error('index 需为 ≥1 的整数（第几次阅读之后）')
+    }
+    const result = objectHistory(
+      {
+        noteFile: args.noteFile?.trim(),
+        id: args.id?.trim(),
+        repo: args.repo?.trim(),
+        path: args.path?.trim(),
+        symbol: args.symbol?.trim(),
+      },
+      { at: args.at?.trim(), index: args.index },
+    )
+    const subject = result.subject
+    const clipped = clipMarkdown(result.markdown)
+    return {
+      found: result.found,
+      noteFile: result.noteFile,
+      title: result.title,
+      ...(subject ? { repo: subject.repo } : {}),
+      ...(subject?.path ? { path: subject.path } : {}),
+      ...(subject?.symbol ? { symbol: subject.symbol } : {}),
+      totalEvents: result.totalEvents,
+      shownEvents: result.shownEvents,
+      asOf: result.asOf,
+      truncated: clipped.truncated,
+      events: result.events.map((e) => ({
+        id: e.id,
+        kind: e.kind,
+        readAt: e.readAt,
+        title: e.title,
+        ...(e.ref ? { ref: e.ref } : {}),
+      })),
+      markdown: clipped.text,
+    }
+  },
+})
+
+export const readDeleteTool = defineTool({
+  name: 'read_delete',
+  description:
+    '删除档案里的一条阅读事件（记错了 / 写废了），随后自动重建该对象的卡片、hub 与 MOC；若这是该对象的最后一条事件，卡片文件一并移除。' +
+    '事件流只追加，删除即物理移除、无法恢复——所以必须显式 confirm=true，且只在用户明确要求删除时调用。',
+  parameters: {
+    id: {
+      type: 'string',
+      required: true,
+      description: '要删除的事件 id（read_query / read_recent 可查）。',
+    },
+    confirm: {
+      type: 'boolean',
+      required: true,
+      description: '必须显式传 true，表示用户已确认删除（不可恢复）。',
+    },
+  },
+  output: {
+    schema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        deleted: { type: 'boolean', required: true },
+        id: { type: 'string', required: true },
+        title: { type: 'string', required: true, description: '被删除记录的标题。' },
+        repo: { type: 'string', required: true },
+        notePath: { type: 'string', required: true, description: '该对象的卡片路径（对象无事件时文件已移除）。' },
+        remainingEvents: { type: 'integer', required: true, description: '该对象剩余阅读次数。' },
+        cardRemoved: { type: 'boolean', required: true, description: '卡片文件是否已随最后一条事件移除。' },
+        libraryCount: { type: 'integer', required: true, description: '删除后档案总条数。' },
+      },
+    },
+    render: (_args, value) => [
+      {
+        type: 'text',
+        text: [
+          `已删除 id=${value.id}（${value.title}）· ${value.repo}`,
+          value.cardRemoved
+            ? '该对象已无记录，卡片文件已移除：'
+            : `该对象还剩 ${value.remainingEvents} 次阅读，卡片已重建：`,
+          value.notePath,
+          `档案共 ${value.libraryCount} 条。`,
+        ].join('\n'),
+      },
+    ],
+  },
+
+  async execute(args) {
+    if (args.confirm !== true) {
+      throw new Error('删除不可恢复：请先向用户确认，再以 confirm=true 调用')
+    }
+    const before = readEntries().find((e) => e.id === args.id)
+    if (!before) throw new Error(`档案里没有 id=${args.id} 的记录`)
+    const key = entryObjectKey(before)
+    const cardPath = noteFilePath(before)
+    const removed = deleteEntry(args.id)
+    if (!removed) throw new Error(`删除失败：找不到 id=${args.id}`)
+    const remaining = (groupByObject(readEntries()).get(key) ?? []).length
+    return {
+      deleted: true,
+      id: args.id,
+      title: entryTitle(before),
+      repo: before.subject.repo,
+      notePath: cardPath,
+      remainingEvents: remaining,
+      cardRemoved: remaining === 0,
+      libraryCount: readEntries().length,
+    }
+  },
+})
+
 export const TOOLS = [
   readCaptureTool,
   readNoteTool,
@@ -765,6 +1137,8 @@ export const TOOLS = [
   vaultReadTool,
   vaultSuggestTool,
   readLinkTool,
+  readHistoryTool,
+  readDeleteTool,
 ]
 
 // vaultRoot re-export keeps the symbol used if tools are imported alone.

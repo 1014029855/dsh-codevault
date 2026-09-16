@@ -3,8 +3,8 @@
  *
  * Registers, on one context:
  *   1. the "code-reading" skill (framework the model loads for reading notes)
- *   2. read_* tools             (capture / note / expand / query / recent)
- *   3. vault_* tools            (search / read — read-only Obsidian-vault context)
+ *   2. read_* tools  (capture / note / expand / query / recent / history / delete)
+ *   3. vault_* tools (search / read / suggest + read_link: read-only vault context)
  *   4. the /codevault command    (usage + vault guidance + model-free snapshot)
  *
  * Config (cordis standard, see DESIGN.md §4):

@@ -28,11 +28,36 @@ function usageText(): CommandResult {
     '   （会按 code-reading 技能：对象坐标 → 机制 → 提炼/比较 → 存疑与回访）',
     '3) 回看/统计：随时问',
     '   “我最近读了什么？” / “deepseek-harness 里我都读过哪些符号？”',
+    '4) 回放历史：问“这个机制我上次是怎么理解的？”',
+    '   （插件会把那张卡倒回到当时的版本，见 /codevault history）',
     '',
     '当前档案：' + stats.total + ' 条记录（' + stats.notes + ' 篇深读笔记 + ' + stats.captures + ' 条快记，覆盖 ' + stats.repos + ' 个仓库）。',
-    '输入 /codevault vault 查看如何用 Obsidian 打开档案。',
+    '输入 /codevault vault 查看如何用 Obsidian 打开档案，/codevault history 查看历史回放怎么用。',
   ].join('\n')
   return { kind: 'success', text: head }
+}
+
+function historyText(): CommandResult {
+  const recent = recentEntries(undefined, 8)
+  const lines = [
+    '档案的历史回放（版本历史）：',
+    '事件流 library.jsonl 只追加、卡片是可重建视图，所以每一张卡在任意时点的样子都能精确回放。',
+    '',
+    '在对话里直接问就行，例如：',
+    '· “把 apply 那张卡回放到第 2 次阅读” → read_history(index=2)',
+    '· “这个机制上周之前我是怎么理解的？” → read_history(at=日期)',
+    '· “这条记错了，删掉” → read_delete(confirm=true)（不可恢复，会先跟你确认）',
+    '',
+  ]
+  if (recent.objects.length > 0) {
+    lines.push('可以回放的卡片（noteFile 可直接给 read_history）：')
+    for (const o of recent.objects) {
+      lines.push(`- ${o.noteFile} · ${o.title} · 读过 ${o.readCount} 次`)
+    }
+  } else {
+    lines.push('档案里还没有记录。')
+  }
+  return { kind: 'success', text: lines.join('\n') }
 }
 
 function vaultText(): CommandResult {
@@ -53,10 +78,10 @@ function vaultText(): CommandResult {
     '· 环境变量：DSCODEVAULT_DATA_DIR=<路径>（改后重启 dsh）。',
     '',
     '档案结构：',
-    '  library.jsonl    # 唯一事实源（勿手改）',
-    '  notes/<id>.md    # 每条记录一张卡（front-matter 坐标 + 正文 + 同仓链接）',
-    '  hub/<repo>.md    # 每仓库一张 hub（时间线）',
-    '  MOC.md           # 总览（仓库清单 + 最近阅读）',
+    '  library.jsonl      # 唯一事实源：一行一次阅读（只追加，勿手改）',
+    '  notes/<对象名>.md   # 对象卡：同一对象的所有阅读合并在这一张（时间线 + 全部提炼 + 回访问题）',
+    '  hub/<repo>.md      # 每仓库一张 hub（该仓库的对象卡清单）',
+    '  MOC.md             # 总览（仓库清单 + 最近阅读对象）',
     '',
     '图谱：卡片间与 hub/MOC 的 [[链接]] 由插件按坐标自动生成，Obsidian 图谱视图直接可用。',
   ].join('\n')
@@ -86,9 +111,10 @@ export function codevaultCommandHandler(rawInput: string): CommandResult {
     if (arg === '') return usageText()
     if (arg === 'vault' || arg.startsWith('vault ')) return vaultText()
     if (arg === 'recent' || arg.startsWith('recent ')) return recentText()
+    if (arg === 'history' || arg.startsWith('history ')) return historyText()
     return {
       kind: 'success',
-      text: ['/codevault 支持：空参数（用法）、/codevault vault（Obsidian 指引）、/codevault recent（快照）。', '', usageText().text ?? ''].join('\n'),
+      text: ['/codevault 支持：空参数（用法）、/codevault vault（Obsidian 指引）、/codevault recent（快照）、/codevault history（历史回放）。', '', usageText().text ?? ''].join('\n'),
     }
   } catch (error) {
     return { kind: 'error', text: `读取源码阅读档案失败：${error instanceof Error ? error.message : String(error)}` }
@@ -98,8 +124,8 @@ export function codevaultCommandHandler(rawInput: string): CommandResult {
 export function registerCodevaultCommand(ctx: Context): void {
   ctx.commands.register({
     name: READ_COMMAND_NAME,
-    description: '源码阅读档案（dsh-codevault）：/codevault 用法；/codevault vault Obsidian 指引；/codevault recent 档案快照。',
-    input: { hint: '留空 / vault / recent' },
+    description: '源码阅读档案（dsh-codevault）：/codevault 用法；/codevault vault Obsidian 指引；/codevault recent 档案快照；/codevault history 历史回放指引。',
+    input: { hint: '留空 / vault / recent / history' },
     handler: (invocation) => codevaultCommandHandler(invocation.rawInput),
   })
 }
